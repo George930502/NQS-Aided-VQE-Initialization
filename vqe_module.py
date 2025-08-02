@@ -66,7 +66,7 @@ def run_vqe_fine_tuning(molecule_ham, nqs_model, n_qubits, n_electrons, vmc_para
     x0 = np.random.normal(0, 2 * np.pi, parameter_count)
     
     print("  [VQE Step] Optimizing with COBYLA...")
-    result = minimize(cost, x0, method='L-BFGS-B', options={'maxiter': max_vqe_iterations})
+    result = minimize(cost, x0, method='COBYLA', options={'maxiter': max_vqe_iterations})
 
     # Get the final state vector from the optimized kernel.
     final_state_vector = cudaq.get_state(vqe_ansatz_kernel, result.x, initial_state_np, n_electrons, n_qubits)
@@ -82,10 +82,11 @@ def generate_training_data_from_vqe(target_state_vector, n_qubits, n_samples, de
     Step 3: Generate "Ground Truth" Data from VQE.
     """
     print("  [Data Gen Step] Generating supervised training data from VQE state...")
-    probs_gpu = torch.from_numpy(np.abs(target_state_vector)**2).to(device)
+    target_state_vector_np = np.array(target_state_vector)
+    probs_gpu = torch.from_numpy(np.abs(target_state_vector_np)**2).to(device)
     
     sampled_indices = torch.multinomial(probs_gpu, num_samples=n_samples, replacement=True)
-    target_amplitudes = torch.from_numpy(target_state_vector).to(device)[sampled_indices]
+    target_amplitudes = torch.from_numpy(target_state_vector_np).to(device)[sampled_indices]
 
     binary_repr = ((sampled_indices.unsqueeze(1) >> torch.arange(n_qubits - 1, -1, -1, device=device)) & 1).float()
     spin_configs = (binary_repr * 2 - 1).to(device)
