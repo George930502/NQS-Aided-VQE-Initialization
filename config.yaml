@@ -1,0 +1,42 @@
+# ----------------------------------------------------
+# Configuration for the Quantum Simulation
+# ----------------------------------------------------
+
+# --- Model Selection ---
+# FFNN is required for the hybrid approach to learn wavefunction phases.
+model:
+  type: 'FFNN' # Options: 'FFNN'
+
+# --- Hybrid FFNN+VQE Method with Feedback Loop ---
+hybrid_params:
+  enabled: true
+  feedback_loops: 3           # Number of times to run the VQE -> NQS feedback loop.
+  nqs_pretrain_epochs: 100     # Epochs for the INITIAL FFNN-VMC training.
+  nqs_retrain_epochs: 10      # Epochs for the SUPERVISED NQS re-training in each loop.
+  vqe_num_samples: 8192       # Samples to draw from NQS/VQE state. (Must be a power of 2 for some GPUs)
+  vqe_max_iterations: 500     # Max iterations for the COBYLA optimizer in VQE.
+
+# Specify the target molecule.
+molecule_name: 'C2'  # Options: 'LiH', 'H2', 'BeH2', 'H2O', 'NH3', 'CH4'
+
+# Configuration for potential energy surface scan
+dissociation_curve:
+  enabled: true
+  start_separation: 0.8
+  end_separation: 2.2
+  points: 15
+
+# Parameters for the NQS-VMC simulation (used for pre-training)
+vmc_params:
+  sampler: 'parallel'
+  n_samples: 1000
+  n_chains: 100
+  burn_in_steps: 500
+  step_intervals: 10
+  learning_rate: 0.05
+  sr_regularization: 0.01
+
+# Parameters for the FFNN model
+ffnn_params:
+  alpha: 3
+  n_layers: 4
