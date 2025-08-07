@@ -10,21 +10,21 @@ model:
 # --- Hybrid FFNN+VQE Method with Feedback Loop ---
 hybrid_params:
   enabled: true
-  feedback_loops: 3           # Number of times to run the VQE -> NQS feedback loop.
-  nqs_pretrain_epochs: 50     # Epochs for the INITIAL FFNN-VMC training.
-  nqs_retrain_epochs: 50      # Epochs for the SUPERVISED NQS re-training in each loop.
-  vqe_num_samples: 8192       # Samples to draw from NQS/VQE state. (Must be a power of 2 for some GPUs)
-  vqe_max_iterations: 500     # Max iterations for the COBYLA optimizer in VQE.
+  feedback_loops: 4       # Number of times to run the VQE -> NQS feedback loop.
+  nqs_pretrain_epochs: 100     # Epochs for the INITIAL FFNN-VMC training.
+  nqs_retrain_epochs: 200      # Epochs for the SUPERVISED NQS re-training in each loop.
+  vqe_num_samples: 3000       # Samples to draw from NQS/VQE state. (Must be a power of 2 for some GPUs)
+  vqe_max_iterations: 300     # Max iterations for the COBYLA optimizer in VQE.
 
 # Specify the target molecule.
-molecule_name: 'N2'  # Options: 'LiH', 'H2', 'BeH2', 'H2O', 'NH3', 'CH4'
+molecule_name: 'H2O_STO-3G'  # Options: 'LiH', 'H2', 'BeH2', 'H2O', 'NH3', 'CH4'
 
 # Configuration for potential energy surface scan
 dissociation_curve:
   enabled: true
   start_separation: 0.8
-  end_separation: 2.2
-  points: 15
+  end_separation: 0.8
+  points: 1
 
 # Parameters for the NQS-VMC simulation (used for pre-training)
 vmc_params:
@@ -40,3 +40,7 @@ vmc_params:
 ffnn_params:
   alpha: 3
   n_layers: 3
+
+# Parameters for the HEW ansatz
+hew_params:
+  n_layers: 5

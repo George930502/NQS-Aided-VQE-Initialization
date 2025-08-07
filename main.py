@@ -35,6 +35,7 @@ if __name__ == '__main__':
     molecule_choice = config['molecule_name']
     vmc_params = config['vmc_params']
     ffnn_params = config['ffnn_params']
+    hew_params = config['hew_params']
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cudaq.set_target("nvidia")
@@ -53,7 +54,7 @@ if __name__ == '__main__':
         print(f"\n--- Calculating for {molecule_choice} @ {label} ---")
 
         mol_pyscf, hf_e, fci_e, ccsd_e, ccsd_t_e, qham_of = get_pyscf_results(molecule_choice, scale)
-        mol_geom_for_cudaq = [(atom[0], tuple(pos)) for atom, pos in mol_pyscf.atom]
+        mol_geom_for_cudaq = [(str(atom), tuple(pos)) for atom, pos in mol_pyscf.atom]
         molecule_ham, data = cudaq.chemistry.create_molecular_hamiltonian(mol_geom_for_cudaq, MOLECULE_DATA[molecule_choice]['basis'])
 
         results['HF'].append(hf_e); results['FCI'].append(fci_e); results['CCSD'].append(ccsd_e); results['CCSD(T)'].append(ccsd_t_e)
@@ -89,7 +90,7 @@ if __name__ == '__main__':
             
             # Step 2: VQE Fine-tuning
             vqe_energy, target_state_vector = run_vqe_fine_tuning(
-                molecule_ham, nqs_model, n_orbitals, data.n_electrons,
+                molecule_ham, nqs_model, n_orbitals, data.n_electrons, hew_params['n_layers'], 
                 vmc_params, hybrid_params['vqe_max_iterations'], device
             )
             final_energy = vqe_energy # Store the energy from this loop

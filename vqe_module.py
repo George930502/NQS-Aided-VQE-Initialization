@@ -9,15 +9,72 @@ from tqdm import trange
 from vmc_cal import efficient_parallel_sampler
 
 @cudaq.kernel
-def vqe_ansatz_kernel(thetas: list[float], initial_state: list[complex], n_electrons: int, n_qubits: int):
+def vqe_ansatz_kernel(thetas: list[float], initial_state: list[complex], n_layers: int, n_qubits: int):
     # Initialize the qubit register directly from the passed-in numpy array.
     qubits = cudaq.qvector(initial_state)
     # for i in range(n_electrons):
     #     x(qubits[i])
     # Apply the UCCSD ansatz.
-    cudaq.kernels.uccsd(qubits, thetas, n_electrons, n_qubits)
+    # cudaq.kernels.uccsd(qubits, thetas, n_electrons, n_qubits)
 
-def run_vqe_fine_tuning(molecule_ham, nqs_model, n_qubits, n_electrons, vmc_params, max_vqe_iterations, device='cpu'):
+    # Apply the hardware-efficient ansatz.
+    theta_idx = 0
+    for _ in range(n_layers):
+        # Single-qubit rotation: RY then RZ
+        for q in range(n_qubits):
+            ry(thetas[theta_idx], qubits[q])
+            theta_idx += 1
+            rz(thetas[theta_idx], qubits[q])
+            theta_idx += 1
+            ry(thetas[theta_idx], qubits[q])
+            theta_idx += 1
+
+        # CNOT entangling layer (even-odd pairwise)
+        # for q in range(0, n_qubits - 1, 2):
+        #     x.ctrl(qubits[q], qubits[q + 1])
+        # for q in range(1, n_qubits - 1, 2):
+        #     x.ctrl(qubits[q], qubits[q + 1])
+        for q in range(n_qubits // 2):
+            z.ctrl(qubits[q], qubits[n_qubits - 1 - q])
+
+    # Optional: final RY-RZ layer after all entangling blocks
+    for q in range(n_qubits):
+        rz(thetas[theta_idx], qubits[q])
+        theta_idx += 1
+        ry(thetas[theta_idx], qubits[q])
+        theta_idx += 1
+        rz(thetas[theta_idx], qubits[q])
+        theta_idx += 1
+
+def adaptive_spsa_optimization(cost_fn, x0, max_iters=100, a=0.2, c=0.1, alpha=0.602, gamma=0.101, avg_grad=True, avg_samples=3):
+    """
+    Adaptive SPSA with optional gradient averaging.
+    """
+    theta = x0.copy()
+    n_params = len(theta)
+
+    for k in trange(max_iters, desc="  Adaptive SPSA"):
+        ak = a / ((k + 1) ** alpha)
+        ck = c / ((k + 1) ** gamma)
+
+        grad = np.zeros_like(theta)
+
+        for _ in range(avg_samples if avg_grad else 1):
+            delta = 2 * np.random.randint(0, 2, size=n_params) - 1
+            theta_plus = theta + ck * delta
+            theta_minus = theta - ck * delta
+
+            y_plus = cost_fn(theta_plus)
+            y_minus = cost_fn(theta_minus)
+
+            grad += (y_plus - y_minus) / (2.0 * ck * delta)
+
+        grad /= avg_samples
+        theta = theta - ak * grad
+
+    return theta
+
+def run_vqe_fine_tuning(molecule_ham, nqs_model, n_qubits, n_electrons, n_layers, vmc_params, max_vqe_iterations, device='cpu'):
     """
     Step 2: VQE Fine-tuning using a globally defined kernel.
     """
@@ -42,7 +99,7 @@ def run_vqe_fine_tuning(molecule_ham, nqs_model, n_qubits, n_electrons, vmc_para
     binary_float = (unique_samples + 1) / 2.0
     powers_of_two_float = (2**torch.arange(n_qubits - 1, -1, -1, device=device, dtype=torch.float32))
     int_indices = (binary_float @ powers_of_two_float).long()
-    
+
     full_state_vector[int_indices] = amplitudes
     
     # Normalize the state vector and ensure it is a C-contiguous numpy array of the correct type.
@@ -51,31 +108,43 @@ def run_vqe_fine_tuning(molecule_ham, nqs_model, n_qubits, n_electrons, vmc_para
         dtype=np.complex64
     )
 
-    print(initial_state_np)
+    # print(initial_state_np)
     print(f"  [VQE Step] Constructed initial state from {len(amplitudes)} unique configurations.")
 
     # parameter_count = cudaq.kernels.uccsd_num_parameters(n_electrons, n_qubits)
-    parameter_count = cudaq.kernels.num_hwe_parameters(n_electrons, n_qubits)
+    parameter_count = 3 * n_qubits * (n_layers + 1)
+    print(f"  [VQE Step] Number of parameters in ansatz: {parameter_count}")
     
     # The cost function simply passes the numpy array and other integers to observe.
     def cost(theta):
-        energy = cudaq.observe(vqe_ansatz_kernel, molecule_ham, theta, initial_state_np, n_electrons, n_qubits).expectation()
-        print(f"[DEBUG] Energy at theta = {theta[:4]}...: {energy:.6f}")
+        # energy = cudaq.observe(vqe_ansatz_kernel, molecule_ham, theta, initial_state_np, n_electrons, n_qubits).expectation()
+        energy = cudaq.observe(vqe_ansatz_kernel, molecule_ham, theta, initial_state_np, n_layers, n_qubits).expectation()        
+        # print(f"[DEBUG] Energy: {energy:.6f}")
         return energy
 
     x0 = np.random.normal(0, 2 * np.pi, parameter_count)
+    # x0 = np.random.normal(0, 2 * np.pi)
     
-    print("  [VQE Step] Optimizing with COBYLA...")
-    result = minimize(cost, x0, method='COBYLA', options={'maxiter': max_vqe_iterations})
+    # COBYLA optimization
+    # print("  [VQE Step] Optimizing with COBYLA...")
+    # result = minimize(cost, x0, method='COBYLA', options={'maxiter': max_vqe_iterations})
 
+    # SPSA optimization
+    print("  [VQE Step] Optimizing with SPSA...")
+    theta_opt = adaptive_spsa_optimization(cost, x0, max_iters=max_vqe_iterations)
     # Get the final state vector from the optimized kernel.
-    final_state_vector = cudaq.get_state(vqe_ansatz_kernel, result.x, initial_state_np, n_electrons, n_qubits)
+    # final_state_vector = cudaq.get_state(vqe_ansatz_kernel, result.x, initial_state_np, n_electrons, n_qubits)
+    # final_state_vector = cudaq.get_state(vqe_ansatz_kernel, result.x, initial_state_np, n_layers, n_qubits)
+    final_state_vector = cudaq.get_state(vqe_ansatz_kernel, theta_opt, initial_state_np, n_layers, n_qubits)
 
     print(f"  [VQE Step] Complete.")
-    print(f"  [VQE Step] Final State Vector: {final_state_vector}")
-    print(f"  [VQE Step] Final Energy: {result.fun:.8f} Ha")
+    # print(f"  [VQE Step] Final State Vector: {final_state_vector}")
+    # print(f"  [VQE Step] Final Energy: {result.fun:.8f} Ha")
+    print(f"  [VQE Step] Final Energy: {cost(theta_opt):.8f} Ha")
 
-    return result.fun, final_state_vector
+    # return result.fun, final_state_vector
+    return cost(theta_opt), final_state_vector
+
 
 def generate_training_data_from_vqe(target_state_vector, n_qubits, n_samples, device='cpu'):
     """
