@@ -53,9 +53,8 @@ if __name__ == '__main__':
         print(f"\n--- Calculating for {molecule_choice} @ {label} ---")
 
         mol_pyscf, hf_e, fci_e, ccsd_e, ccsd_t_e, qham_of = get_pyscf_results(molecule_choice, scale)
-        mol_geom_for_cudaq = [(atom[0], tuple(pos)) for atom, pos in mol_pyscf.atom]
+        mol_geom_for_cudaq = [(str(atom), tuple(pos)) for atom, pos in mol_pyscf.atom]        
         molecule_ham, data = cudaq.chemistry.create_molecular_hamiltonian(mol_geom_for_cudaq, MOLECULE_DATA[molecule_choice]['basis'])
-
         results['HF'].append(hf_e); results['FCI'].append(fci_e); results['CCSD'].append(ccsd_e); results['CCSD(T)'].append(ccsd_t_e)
 
         n_orbitals = mol_pyscf.nao_nr() * 2
