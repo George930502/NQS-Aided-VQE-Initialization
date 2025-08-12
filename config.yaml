@@ -12,7 +12,7 @@ hybrid_params:
   enabled: true
   feedback_loops: 4       # Number of times to run the VQE -> NQS feedback loop.
   nqs_pretrain_epochs: 100     # Epochs for the INITIAL FFNN-VMC training.
-  nqs_retrain_epochs: 200      # Epochs for the SUPERVISED NQS re-training in each loop.
+  nqs_retrain_epochs: 100      # Epochs for the SUPERVISED NQS re-training in each loop.
   vqe_num_samples: 3000       # Samples to draw from NQS/VQE state. (Must be a power of 2 for some GPUs)
   vqe_max_iterations: 300     # Max iterations for the COBYLA optimizer in VQE.
 

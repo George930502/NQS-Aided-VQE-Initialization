@@ -8,6 +8,7 @@ from moleculars import get_pyscf_results, MOLECULE_DATA
 from vmc_cal import efficient_parallel_sampler, stochastic_reconfiguration_update, local_energy_batch
 from vqe_module import run_vqe_fine_tuning, generate_training_data_from_vqe, run_nqs_supervised_training
 from tqdm import trange
+from debug import *
 
 def load_config(path="config.yaml"):
     with open(path, 'r') as file:
@@ -56,7 +57,6 @@ if __name__ == '__main__':
         mol_pyscf, hf_e, fci_e, ccsd_e, ccsd_t_e, qham_of = get_pyscf_results(molecule_choice, scale)
         mol_geom_for_cudaq = [(str(atom), tuple(pos)) for atom, pos in mol_pyscf.atom]
         molecule_ham, data = cudaq.chemistry.create_molecular_hamiltonian(mol_geom_for_cudaq, MOLECULE_DATA[molecule_choice]['basis'])
-
         results['HF'].append(hf_e); results['FCI'].append(fci_e); results['CCSD'].append(ccsd_e); results['CCSD(T)'].append(ccsd_t_e)
 
         n_orbitals = mol_pyscf.nao_nr() * 2
@@ -82,7 +82,9 @@ if __name__ == '__main__':
                 print(f"[Epoch {ep + 1}] Eval Energy: {eval_mean:.6f} ± {eval_std:.6f} Ha")
 
         print("[Step 1] NQS pre-training finished.")
-        
+
+        run_alignment_test(nqs_model, qham_of, n_orbitals)
+
         final_energy = 0.0
         # Start the iterative feedback loop
         for loop in range(hybrid_params['feedback_loops']):
@@ -90,8 +92,8 @@ if __name__ == '__main__':
             
             # Step 2: VQE Fine-tuning
             vqe_energy, target_state_vector = run_vqe_fine_tuning(
-                molecule_ham, nqs_model, n_orbitals, data.n_electrons, hew_params['n_layers'], 
-                vmc_params, hybrid_params['vqe_max_iterations'], device
+                molecule_ham, nqs_model, n_orbitals, data.n_electrons, hew_params['n_layers'],
+                vmc_params, qham_of, hybrid_params['vqe_max_iterations'], device
             )
             final_energy = vqe_energy # Store the energy from this loop
 
