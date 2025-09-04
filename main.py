@@ -5,10 +5,9 @@ import matplotlib.pyplot as plt
 import cudaq
 from models import FFNN
 from moleculars import get_pyscf_results, MOLECULE_DATA
-from vmc_cal import efficient_parallel_sampler, stochastic_reconfiguration_update, local_energy_batch
-from vqe_module import run_vqe_fine_tuning, generate_training_data_from_vqe, run_nqs_supervised_training
+from vmc_cal import *
+from vqe_details import *
 from tqdm import trange
-from debug import *
 
 def load_config(path="config.yaml"):
     with open(path, 'r') as file:
@@ -29,6 +28,14 @@ def plot_results(results, seps, config):
     plt.title(f"{molecule_name} Potential Energy Dissociation Curve ({basis})")
     plt.legend(), plt.grid(True, which='both', linestyle='--', linewidth=0.5)
     plt.tight_layout(), plt.show()
+
+def adjust_lr(initial_lr, epoch, schedule_type, T_max, decay_rate=0.98):
+    if schedule_type == "cosine":
+        return initial_lr * 0.5 * (1 + np.cos(np.pi * epoch / T_max))
+    elif schedule_type == "exp":
+        return initial_lr * (decay_rate ** epoch)
+    else:
+        return initial_lr
 
 if __name__ == '__main__':
     config = load_config()
@@ -59,53 +66,78 @@ if __name__ == '__main__':
         molecule_ham, data = cudaq.chemistry.create_molecular_hamiltonian(mol_geom_for_cudaq, MOLECULE_DATA[molecule_choice]['basis'])
         results['HF'].append(hf_e); results['FCI'].append(fci_e); results['CCSD'].append(ccsd_e); results['CCSD(T)'].append(ccsd_t_e)
 
+        print(f"  Hartree-Fock: {hf_e:.6f} Ha")
+        print(f"  FCI:          {fci_e:.6f} Ha")
+        print(f"  CCSD:         {ccsd_e:.6f} Ha")
+        print(f"  CCSD(T):      {ccsd_t_e:.6f} Ha")
+
         n_orbitals = mol_pyscf.nao_nr() * 2
         n_hidden = int(n_orbitals * ffnn_params['alpha'])
         nqs_model = FFNN(n_orbitals, n_hidden, ffnn_params['n_layers'], device=device)
 
         # --- HYBRID ALGORITHM WITH FEEDBACK LOOP ---
         
-        # Step 1: Initial NQS Pre-training
+        # Step 1: Initial NQS Pre-training with early stopping
         print(f"[Step 1] Starting NQS pre-training for {hybrid_params['nqs_pretrain_epochs']} epochs...")
+
+        best_energy = float("inf")
+        best_state_dict = None
+        no_improve_count = 0
+        patience = 100   # stop if no improvement for 100 epochs
+
         for ep in trange(hybrid_params['nqs_pretrain_epochs'], desc="NQS Pre-training"):
+            lr = adjust_lr(vmc_params['learning_rate'], ep, schedule_type="cosine", T_max=hybrid_params['nqs_pretrain_epochs'])
+
             samples = efficient_parallel_sampler(
-                nqs_model, vmc_params['n_samples'] // vmc_params['n_chains'], vmc_params['n_chains'], n_orbitals,
-                vmc_params['burn_in_steps'], vmc_params['step_intervals'], device=device
+                nqs_model, 
+                vmc_params['n_samples'] // vmc_params['n_chains'], 
+                vmc_params['n_chains'], 
+                n_orbitals,
+                vmc_params['burn_in_steps'], 
+                vmc_params['step_intervals'], 
+                device=device
             )
+
             stochastic_reconfiguration_update(
-                nqs_model, samples, qham_of, lr=vmc_params['learning_rate'], reg=vmc_params['sr_regularization'], device=device
+                nqs_model, samples, qham_of,
+                lr=vmc_params['learning_rate'],
+                reg=vmc_params['sr_regularization'],
+                device=device
             )
+
+            eval_local_energies = local_energy_batch(nqs_model, samples, qham_of, device)
+            eval_mean = eval_local_energies.mean().item()
+            eval_std = eval_local_energies.std().item() / np.sqrt(len(eval_local_energies))
+
             if (ep + 1) % 10 == 0:
-                eval_local_energies = local_energy_batch(nqs_model, samples, qham_of, device)
-                eval_mean = eval_local_energies.mean().item()
-                eval_std = eval_local_energies.std().item() / np.sqrt(len(eval_local_energies))
                 print(f"[Epoch {ep + 1}] Eval Energy: {eval_mean:.6f} ± {eval_std:.6f} Ha")
+
+            if eval_mean < best_energy:
+                best_energy = eval_mean
+                best_state_dict = {k: v.clone().detach().cpu() for k, v in nqs_model.state_dict().items()}
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+
+            if no_improve_count >= patience:
+                print(f"[Early Stopping] No improvement for {patience} epochs. Stopping pre-training.")
+                break
+
+        if best_state_dict is not None:
+            nqs_model.load_state_dict(best_state_dict)
+            print(f"[Step 1] Restored best model parameters with energy = {best_energy:.6f} Ha")
 
         print("[Step 1] NQS pre-training finished.")
 
-        run_alignment_test(nqs_model, qham_of, n_orbitals)
-
         final_energy = 0.0
-        # Start the iterative feedback loop
-        for loop in range(hybrid_params['feedback_loops']):
-            print(f"\n--- Starting Feedback Loop {loop + 1}/{hybrid_params['feedback_loops']} ---")
             
-            # Step 2: VQE Fine-tuning
-            vqe_energy, target_state_vector = run_vqe_fine_tuning(
-                molecule_ham, nqs_model, n_orbitals, data.n_electrons, hew_params['n_layers'],
-                vmc_params, qham_of, hybrid_params['vqe_max_iterations'], device
-            )
-            final_energy = vqe_energy # Store the energy from this loop
+        # Step 2: VQE Fine-tuning
+        vqe_energy, target_state_vector = run_vqe_fine_tuning(
+            molecule_ham, nqs_model, n_orbitals, data.n_electrons, hew_params['n_layers'],
+            vmc_params, qham_of, hybrid_params['vqe_max_iterations'], device
+        )
 
-            # Step 3: Generate Training Data
-            spin_configs, target_amplitudes = generate_training_data_from_vqe(
-                target_state_vector, n_orbitals, hybrid_params['vqe_num_samples'], device
-            )
-
-            # Step 4: Supervised NQS Re-training
-            run_nqs_supervised_training(
-                nqs_model, spin_configs, target_amplitudes, hybrid_params['nqs_retrain_epochs'], device
-            )
+        final_energy = vqe_energy # Store the energy from this loop
 
         print("\n--- All feedback loops complete ---")
         results["FFNN+VQE"].append((final_energy, 0.0))
